@@ -1,0 +1,92 @@
+parameters:
+  - name: environment
+    type: string
+  - name: variableGroup
+    type: string
+  - name: appName
+    type: string
+
+jobs:
+  - deployment: "DeployEnv"
+    displayName: "Deploy Env"
+    environment:
+      name: ${{parameters.environment}}
+      resourceType: VirtualMachine
+    variables:
+      - group: ${{parameters.variableGroup}}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - task: DeleteFiles@1
+              displayName: "Delete old artifacts if any"
+              inputs:
+                SourceFolder: "$(Pipeline.Workspace)/drop/"
+                Contents: "*.zip"
+
+            - download: current
+              displayName: "Download Artifact"
+              artifact: drop
+
+            - task: ExtractFiles@1
+              inputs:
+                archiveFilePatterns: "$(Pipeline.Workspace)/**/*.zip"
+                destinationFolder: "$(Pipeline.Workspace)/application"
+                cleanDestinationFolder: true
+                overwriteExisitingFiles: true
+
+            - task: qetza.replacetokens.replacetokens-task.replacetokens@6
+              displayName: "Replace token in **/*.json"
+              inputs:
+                sources: "$(Pipeline.Workspace)/application/*.json"
+                encoding: "auto"
+                tokenPattern: "default"
+                writeBOM: true
+                actionOnMissing: "warn"
+                keepToken: false
+                actionOnNoFiles: "continue"
+                enableTransforms: false
+                enableRecursion: false
+                useLegacyPattern: false
+                enableTelemetry: true
+
+            - task: ArchiveFiles@2
+              inputs:
+                rootFolderOrFile: "$(Pipeline.Workspace)/application/"
+                includeRootFolder: false
+                archiveType: "zip"
+                archiveFile: "$(Pipeline.Workspace)/drop/$(Build.BuildId).zip"
+                replaceExisitngArchive: true
+
+            - task: PowerShell@2
+              displayName: "Extract zip File"
+              inputs:
+                targetType: "inline"
+                script: |
+                  $zipPath = "$(Pipeline.Workspace)/drop/$(Build.BuildId).zip"
+                  $extractPath = "$env:SystemDrive\inetpub\${{parameters.appName}}"
+
+                  # Check destination folder exist
+                  if(-Not (Test-Path -Path $extractPath)) {
+                    New-Item -ItemType Directory -Path $extractPath
+                  }
+
+                  # Remove exisitng files in the destination folder
+                  Remove-Item -Path "$extractPath\*" -Recurse -Force
+
+                  Write-Host "Extracting zip file from $zipPath to $extractPath"
+                  Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+
+            - task: PowerShell@2
+              displayName: "Run Schema Builder Application"
+              inputs:
+                targetType: "inline"
+                script: |
+                  $systemDrive = (Get-WmiObject Win32_OperatingSystem).SystemDrive
+                  $appName = "${{ parameters.appName }}"
+                  $appPath = "$systemDrive\inetpub\$appName"
+
+                  Set-Location $appPath
+                  Copy-Item "$appPath\appsettings.Deploy.json" "$appPath\appsettings.json"
+                  Write-Host "Running Schema Builder applocation"
+                  ./TCG.EMS.SchemaBuilder.exe       

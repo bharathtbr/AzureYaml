@@ -1,0 +1,71 @@
+parameters:
+  - name: emsProjects
+    type: object
+    default:
+      - { displayName: "Name", projectName: "Project", projectFolder: "Folder", isTestProject: false }
+
+jobs:
+  - job: Build_N_Test
+    displayName: "Build & Test"
+    steps:
+      # Use .NET SDK
+      - task: UseDotNet@2
+        displayName: "Use .NET 8.x SDK"
+        inputs:
+          packageType: "sdk"
+          version: "8.x"
+      - task: NuGetToolInstaller@1
+      - task: NuGetAuthenticate@1
+
+      # Loop all Projects
+      - ${{each project in parameters.emsProjects}}:
+          # Dotnet Restore
+
+          - task: DotNetCoreCLI@2
+            displayName: "Restore ${{project.displayName}} packages"
+            inputs:
+              command: "restore"
+              projects: "$(Build.SourcesDirectory)/src/${{project.projectFolder}}/${{project.projectName}}/*.csproj"
+              feedsToUse: 'select'
+              #nugetConfigPath: '$(nugetConfigPath)'
+              vstsFeed: 'af1899ba-7b7c-4fe4-b35a-e3cf0e8644a2/482815e9-0d0f-4199-b418-eadedef36271'
+
+          # Dotnet Build
+          - task: DotNetCoreCLI@2
+            displayName: "Build ${{project.displayName}}"
+            inputs:
+              command: "build"
+              projects: "$(Build.SourcesDirectory)/src/${{project.projectFolder}}/${{project.projectName}}/*.csproj"
+              arguments: "--no-restore --configuration Release"
+
+          # Test Project
+          - ${{ if eq(project.isTestProject, 'true')}}:
+              # Run Tests
+              - task: DotNetCoreCLI@2
+                displayName: "Test ${{project.displayName}}"
+                inputs:
+                  command: test
+                  projects: "$(Build.SourcesDirectory)/src/${{project.projectFolder}}/${{project.projectName}}/*.csproj"
+                  arguments: '--collect:"XPlat Code Coverage"'
+          
+          # - ${{ if eq(project.isTestProject, 'false')}}:
+          #   - task: DotNetCoreCLI@2
+          #     displayName: "Publish ${{project.displayName}}"
+          #     inputs:
+          #       command: "publish"
+          #       publishWebProjects: true
+          #       projects: "$(Build.SourcesDirectory)/src/${{project.projectFolder}}/${{project.projectName}}/*.csproj"
+          #       arguments: "--no-restore --configuration Release --output $(Build.ArtifactStagingDirectory)"
+          #       zipAfterPublish: true
+
+            # - task: PublishBuildArtifacts@1
+            #   inputs:
+            #     pathtoPublish: "$(Build.ArtifactStagingDirectory)"
+            #     artifactName: "drop"
+
+      # Publish Code Coverage
+      - task: PublishCodeCoverageResults@1
+        displayName: "Publish Code Coverage Report"
+        inputs:
+          codeCoverageTool: "Cobertura"
+          summaryFileLocation: "$(Agent.TempDirectory)/**/coverage.cobertura.xml"

@@ -1,0 +1,155 @@
+parameters:
+  - name: environment
+    type: string
+  - name: variableGroup
+    type: string
+  - name: appName
+    type: string
+  - name: httpPort
+    type: string
+  - name: httpsPort
+    type: string
+
+jobs:
+  - deployment: "DeployEnv"
+    displayName: "Deploy Env - ${{parameters.environment}}"
+    environment:
+      name: ${{parameters.environment}}
+      resourceType: VirtualMachine
+    variables:
+      - group: ${{parameters.variableGroup}}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - task: DeleteFiles@1
+              displayName: "Delete old artifacts if any"
+              inputs:
+                SourceFolder: "$(Pipeline.Workspace)/drop/"
+                Contents: "*.zip"
+
+            - download: current
+              displayName: "Download Artifact"
+              artifact: drop
+
+            - task: ExtractFiles@1
+              inputs:
+                archiveFilePatterns: "$(Pipeline.Workspace)/**/*.zip"
+                destinationFolder: "$(Pipeline.Workspace)/application"
+                cleanDestinationFolder: true
+                overwriteExisitingFiles: true
+
+            - task: qetza.replacetokens.replacetokens-task.replacetokens@6
+              displayName: "Replace token in **/*.json"
+              inputs:
+                sources: "$(Pipeline.Workspace)/application/*.json"
+                encoding: "auto"
+                tokenPattern: "default"
+                writeBOM: true
+                actionOnMissing: "warn"
+                keepToken: false
+                actionOnNoFiles: "continue"
+                enableTransforms: false
+                enableRecursion: false
+                useLegacyPattern: false
+                enableTelemetry: true
+
+            - task: ArchiveFiles@2
+              inputs:
+                rootFolderOrFile: "$(Pipeline.Workspace)/application/"
+                includeRootFolder: false
+                archiveType: "zip"
+                archiveFile: "$(Pipeline.Workspace)/drop/$(Build.BuildId).zip"
+                replaceExisitngArchive: true
+
+            - task: IISWebAppManagementOnMachineGroup@0
+              displayName: "IIS Create Web Site If Not Exist"
+              inputs:
+                EnableIIS: true
+                IISDeploymentType: "IISWebsite"
+                ActionIISWebsite: "CreateOrUpdateWebsite"
+                WebsiteName: ${{parameters.appName}}
+                WebsitePhysicalPath: '%SystemDrive%\inetpub\${{parameters.appName}}'
+                WebsitePhysicalPathAuth: "WebsiteUserPassThrough"
+                AddBinding: true
+                Bindings: |
+                  {
+                      bindings:[
+                          {
+                              "protocol":"http",
+                              "ipAddress":"*",
+                              "hostname":"",
+                              "port": ${{parameters.httpPort}},
+                              "sslThumbprint":"",
+                              "sniFlag":false
+                          },
+                          {
+                              "protocol":"https",
+                              "ipAddress":"*",
+                              "hostname":"",
+                              "port": ${{parameters.httpsPort}},
+                              "sslThumbprint":"$(APP_SSL_THUMBPRINT)",
+                              "sniFlag":false
+                          }                             
+                      ]
+                  }
+                CreateOrUpdateAppPoolForWebsite: true
+                AppPoolNameForWebsite: "${{parameters.appName}}"
+                DotNetVersionForWebsite: "No Managed Code"
+                PipeLineModeForWebsite: "Integrated"
+                AppPoolIdentityForWebsite: "ApplicationPoolIdentity"
+
+            - task: PowerShell@2
+              displayName: "Check Application Pool Status"
+              inputs:
+                targetType: "inline"
+                script: |
+                  $appPoolName = "${{parameters.appName}}"
+                  $appPoolState = (Get-WebAppPoolState -Name $appPoolName).Value
+                  if ($appPoolState -eq 'Started') {
+                    Write-Host "Application pool is running. Stopping..."
+                    Write-Output "##vso[task.setvariable variable=stopAppPool]true"
+                  } else {
+                    Write-Host "Application pool is not running. No action required."
+                    Write-Output "##vso[task.setvariable variable=stopAppPool]false"
+                  }
+
+            - task: IISWebAppManagementOnMachineGroup@0
+              displayName: "IIS Stop App Pool"
+              condition: eq(variables['stopAppPool'], 'true')
+              inputs:
+                IISDeploymentType: "IISApplicationPool"
+                ActionIISApplicationPool: "StopAppPool"
+                StartStopRecycleAppPoolName: ${{parameters.appName}}
+
+            - task: IISWebAppDeploymentOnMachineGroup@0
+              displayName: "IIS Deploy App"
+              inputs:
+                WebSiteName: ${{parameters.appName}}
+                Package: '$(Pipeline.Workspace)\drop\$(Build.BuildId).zip'
+
+            - task: PowerShell@2
+              displayName: "Copy appsettings deploy to appsettings"
+              inputs:
+                targetType: "inline"
+                script: |
+                  $systemDrive = (Get-WmiObject Win32_OperatingSystem).SystemDrive
+                  $appName = "${{ parameters.appName }}"
+                  $appPath = "$systemDrive\inetpub\$appName"
+
+                  Set-Location $appPath
+                  Copy-Item "$appPath\appsettings.Deploy.json" "$appPath\appsettings.json"
+
+            - task: IISWebAppManagementOnMachineGroup@0
+              displayName: "IIS Start App Pool"
+              inputs:
+                IISDeploymentType: "IISApplicationPool"
+                ActionIISApplicationPool: "StartAppPool"
+                StartStopRecycleAppPoolName: ${{parameters.appName}}
+
+            - task: PowerShell@2
+              displayName: "Restart IIS"
+              inputs:
+                targetType: "inline"
+                script: |
+                  Restart-Service -Name 'w3svc'

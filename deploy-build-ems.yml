@@ -1,0 +1,108 @@
+name: $(Date:yyyyMMdd)$(Rev:.r)-$(SourceBranchName)
+
+trigger:
+  - development
+  - qa
+  #- uat
+  #- release/*
+
+pool:
+  name: EMS-LAC-AGENTS
+  demands:
+    - Agent.OS -equals Windows_NT
+
+stages:
+  - stage: Artifact
+    displayName: "Artifact Stage"
+    jobs:
+      - template: "templates/artifact-ems-template.yml"
+        parameters:
+          projectName: 'TCG.EMS.API'
+          projectPath: 'api'
+          publishWebProject: true
+
+  # DEV Deployment  
+
+  - stage: DeployToLADev
+    displayName: "Deploy to LA Dev"
+    dependsOn: 
+      - Artifact  
+    condition: and(
+      succeeded(), 
+      or(
+      startsWith(variables['Build.SourceBranch'], 'refs/heads/development'),
+      startsWith(variables['Build.SourceBranch'], 'refs/heads/feature/')
+      ))
+    jobs:
+      - template: "templates/iis-ems-template.yml"
+        parameters:
+          environment: 'cg-ems-app-la-env-dev'
+          variableGroup: 'cg-ems-la-env-dev'
+          appName: "EMSAPI"
+          httpPort: '80'
+          httpsPort: '443'
+  
+  # DM Deployment  
+
+  # - stage: DeployToLADM
+  #   displayName: "Deploy to LA DM"
+  #   dependsOn: 
+  #     - Artifact
+  #     - DeployToLADev
+  #   condition: and(
+  #     always(), 
+  #     or(
+  #     startsWith(variables['Build.SourceBranch'], 'refs/heads/development'),
+  #     startsWith(variables['Build.SourceBranch'], 'refs/heads/Development')
+  #     ))
+  #   jobs:
+  #     - template: "templates/iis-ems-template.yml"
+  #       parameters:
+  #         environment: 'cg-ems-app-la-env-dm'
+  #         variableGroup: 'cg-ems-la-env-dms-dev'
+  #         appName: "EMSAPI"
+
+  # QA Deployment
+
+  - stage: DeployToLAQa
+    displayName: "Deploy to LA QA"
+    dependsOn: 
+      - Artifact      
+    condition: and(
+      succeeded(), 
+      or(
+      startsWith(variables['Build.SourceBranch'], 'refs/heads/qa'), 
+      startsWith(variables['Build.SourceBranch'], 'refs/heads/uat'), 
+      startsWith(variables['Build.SourceBranch'], 'refs/heads/release')
+      ))
+    jobs:
+      - template: "templates/iis-ems-template.yml"
+        parameters:
+          environment: 'cg-ems-app-la-env-qa'
+          variableGroup: 'cg-ems-la-env-qa'
+          appName: "EMSAPI"
+          httpPort: '80'
+          httpsPort: '443'
+  
+  # Stage Deployment
+
+  - stage: DeployToLAUat
+    displayName: "Deploy to LA UAT"
+    dependsOn: 
+      - Artifact
+      - DeployToLAQa
+    condition: and(
+      succeeded(), 
+      or(
+      startsWith(variables['Build.SourceBranch'], 'refs/heads/uat'), 
+      startsWith(variables['Build.SourceBranch'], 'refs/heads/release')
+      ))
+    jobs:
+      - template: "templates/iis-ems-template.yml"
+        parameters:
+          environment: 'cg-ems-app-la-env-uat'
+          variableGroup: 'cg-ems-la-env-uat'
+          appName: "EMSAPI"
+          httpPort: '80'
+          httpsPort: '443'
+
